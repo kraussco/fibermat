@@ -174,8 +174,18 @@ class Mesh(pd.DataFrame):
         if len(net):
             # Inter-fiber connections
             mesh.constraint = mesh.index.values.reshape(-1, 2)[:, ::-1].ravel()
-            # Sort nodes along fibers
-            mesh.sort_values(by=["fiber", "s"], inplace=True)
+            # A width contact can sit on a fiber tip, at the same abscissa as the
+            # end node. Keep that end node outside the contact so it stays first
+            # or last along the fiber.
+            partner = mesh.constraint.to_numpy()
+            same = mesh.fiber.to_numpy() == mesh.fiber.to_numpy()[partner]
+            abscissa = mesh.s.to_numpy()
+            tie = np.ones(len(mesh), dtype=int)
+            tie[same & (abscissa < 0)] = 0
+            tie[same & (abscissa >= 0)] = 2
+            mesh["_tie"] = tie
+            mesh.sort_values(by=["fiber", "s", "_tie"], inplace=True)
+            mesh.drop(columns="_tie", inplace=True)
             # Intra-fiber elements
             mesh.beam = np.hstack(
                 mesh.groupby("fiber")
@@ -186,9 +196,11 @@ class Mesh(pd.DataFrame):
             mesh.index = indices[mesh.index]
             mesh.beam = indices[mesh.beam]
             mesh.constraint = indices[mesh.constraint]
-            # Correct end nodes
+            # Correct end nodes. ``.values`` is read-only on recent pandas.
             mask = (mesh.fiber.values == mesh.fiber.loc[mesh.constraint].values)
-            mesh.constraint.values[mask] = mesh.index[mask]
+            constraint = mesh.constraint.to_numpy(copy=True)
+            constraint[mask] = mesh.index.to_numpy()[mask]
+            mesh.constraint = constraint
 
         # Return the `Mesh` object
         return mesh

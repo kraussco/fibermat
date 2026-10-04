@@ -127,6 +127,7 @@ msh.plot(scalars="force", cmap=plt.cm.twilight_shifted)
 import fibermat
 from fibermat.mat import *
 from fibermat.net import *
+from fibermat.pack import *
 from fibermat.mesh import *
 from fibermat.solver import *
 from fibermat.model import *

@@ -12,6 +12,36 @@ from fibermat import *
 from fibermat import Mat, Mesh
 
 
+def _rotation_from_x(direction):
+    """Rotation taking the local +X axis onto ``direction``."""
+    src = np.array([1.0, 0.0, 0.0])
+    dst = np.asarray(direction, dtype=float)
+    dst = dst / np.linalg.norm(dst)
+    cross = np.cross(src, dst)
+    cosine = float(np.dot(src, dst))
+    sine = float(np.linalg.norm(cross))
+    if sine < 1e-12:
+        if cosine > 0:
+            return np.eye(3)
+        # 180 degrees about Y: +X goes to -X, thickness (local Z) stays vertical.
+        return np.diag([-1.0, 1.0, -1.0])
+    axis = cross / sine
+    skew = np.array([
+        [0.0, -axis[2], axis[1]],
+        [axis[2], 0.0, -axis[0]],
+        [-axis[1], axis[0], 0.0],
+    ])
+    return np.eye(3) + sine * skew + (1.0 - cosine) * (skew @ skew)
+
+
+def _place_fiber(mesh, center, direction):
+    """Rotate a fiber from the local X axis onto ``direction`` and translate it."""
+    transform = np.eye(4)
+    transform[:3, :3] = _rotation_from_x(direction)
+    transform[:3, 3] = np.asarray(center, dtype=float)
+    mesh.transform(transform, inplace=True)
+
+
 def vtk_fiber(length=25., width=1., thickness=1., x=0., y=0., z=0.,
               u=1., v=0., w=0., shear=1., tensile=np.inf, index=None,
               r_resolution=1, theta_resolution=8, z_resolution=20, **_):
@@ -68,7 +98,11 @@ def vtk_fiber(length=25., width=1., thickness=1., x=0., y=0., z=0.,
 
     """
     # Create the VTK mesh (cylindrical structured grid)
-    msh = pv.CylinderStructured(radius=np.linspace(0.5, 0, r_resolution + 1),
+    # Outer radius is 0.5 so a later scale by (length, width, thickness)
+    # gives an elliptical cross-section. The inner radius stays positive
+    # because current PyVista rejects a zero radius.
+    radius = np.linspace(1e-6, 0.5, r_resolution + 1)
+    msh = pv.CylinderStructured(radius=radius,
                                 theta_resolution=theta_resolution,
                                 z_resolution=z_resolution)
 
@@ -83,11 +117,10 @@ def vtk_fiber(length=25., width=1., thickness=1., x=0., y=0., z=0.,
         msh["G"] = np.full(len(msh.points), shear)
         msh["E"] = np.full(len(msh.points), tensile)
 
-    # Transform the mesh (scale, rotate, and translate)
+    # Transform the mesh (scale, rotate, and translate). The cylinder axis is
+    # the local X axis; rotate it onto the fiber direction, then move it.
     msh.scale([l, b, h], inplace=True)
-    pv.translate(msh,
-                 center=(x, y, z),
-                 direction=(u, v, w))
+    _place_fiber(msh, (x, y, z), (u, v, w))
 
     # Return VTK mesh
     return msh
@@ -147,6 +180,61 @@ def vtk_mat(mat=None, func=None, verbose=True, **kwargs):
 
     # Combine all individual fiber meshes into a single VTK mesh
     return pv.MultiBlock(fibers).combine()
+
+
+def vtk_tows(mat=None, theta_resolution=12, verbose=True):
+    """Export draped tows.
+
+    Straight fibers are drawn as usual. When ``mat.attrs["centerlines"]`` is
+    set, each tow is a ribbon swept along that bent centerline.
+    """
+    if mat is None:
+        mat = Mat()
+    lines = mat.attrs.get("centerlines")
+    if not lines:
+        return vtk_mat(mat, verbose=verbose, theta_resolution=theta_resolution)
+
+    assert Mat.check(mat)
+    meshes = []
+    width = mat["b"].to_numpy(dtype=float)
+    thickness = mat["h"].to_numpy(dtype=float)
+    for i, centerline in tqdm(list(enumerate(lines)), desc="Create VTK tows",
+                              disable=not verbose):
+        mesh = _swept_tow(
+            centerline, float(width[i]), float(thickness[i]),
+            theta_resolution, index=i,
+        )
+        meshes.append(mesh)
+    return pv.MultiBlock(meshes).combine()
+
+
+def _swept_tow(centerline, width, thickness, theta_resolution, index=None):
+    """Elliptical ribbon following ``centerline``."""
+    line = np.asarray(centerline, dtype=float)
+    tangent = np.gradient(line, axis=0)
+    tangent /= np.maximum(np.linalg.norm(tangent, axis=1, keepdims=True), 1e-12)
+    side = np.cross(tangent, np.array([0.0, 0.0, 1.0]))
+    length = np.linalg.norm(side, axis=1, keepdims=True)
+    side = np.divide(side, np.maximum(length, 1e-12))
+    flat = length[:, 0] < 1e-8
+    side[flat] = np.array([0.0, 1.0, 0.0])
+    side /= np.maximum(np.linalg.norm(side, axis=1, keepdims=True), 1e-12)
+    normal = np.cross(side, tangent)
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
+    angle = np.linspace(0.0, 2.0 * np.pi, theta_resolution, endpoint=False)
+    ring = (
+        line[:, None, :]
+        + np.cos(angle)[None, :, None] * side[:, None, :] * (0.5 * width)
+        + np.sin(angle)[None, :, None] * normal[:, None, :] * (0.5 * thickness)
+    )
+    ring = np.concatenate((ring, ring[:, :1, :]), axis=1)
+    n_along, n_around, _ = ring.shape
+    grid = pv.StructuredGrid()
+    grid.points = ring.reshape(-1, 3)
+    grid.dimensions = (n_around, n_along, 1)
+    if index is not None:
+        grid.point_data["fiber"] = np.full(grid.n_points, index)
+    return grid
 
 
 def vtk_mesh(mesh=None,
