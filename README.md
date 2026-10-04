@@ -223,3 +223,29 @@ msh.save("outputs/msh.vtk")
 ```
 
 ![example](https://github.com/fmahe/fibermat/raw/main/images/example.png)
+
+## Pack an CF-SMC stack
+
+Drop rectangular tows into a box, then split each tow into a row of touching round fibers. The fiber diameter is the tow thickness.
+
+```python
+from fibermat.pack import pack, subdivide
+
+tows = pack(
+    box=(100.0, 50.0, 4.0),  # box length, width and height (mm)
+    length=12.5,             # tow length (mm)
+    width=4.0,               # tow width (mm)
+    thickness=0.12,          # tow height (mm)
+    section="rectangle",
+    volume_fraction=0.5,
+    seed=1,
+)
+fibers = subdivide(tows)
+
+```
+
+`box` is centered in the plane and stands on `z = 0`. The mat is periodic in the plane. `volume_fraction` is a cap: packing stops when another tow does not fit, and the fraction actually reached is stored in `tows.attrs["volume_fraction"]`. `subdivide` replaces each tow by `floor(width / thickness)` parallel fibers of diameter `thickness`.
+
+The stack below uses those dimensions. Each tow is colored by its in-plane angle with the viridis colormap. A tow has no preferred direction, so 0° and 180° are the same orientation.
+
+![SMC stack colored by tow angle](images/smc_stack.png)
