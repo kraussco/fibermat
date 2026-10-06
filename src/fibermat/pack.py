@@ -415,6 +415,117 @@ def subdivide(mat):
     return Mat(frame)
 
 
+def clip_polygon(mat, polygon):
+    """Cut the stack with a shapely polygon extruded along z.
+
+    The polygon lies in the xy plane and the cut is vertical. A fiber whose
+    centerline misses the polygon is removed. A fiber that crosses the
+    boundary is replaced by the pieces of its centerline that lie inside.
+    Each piece keeps the original fiber length in ``attrs["source_length"]``
+    so a later line mesh can avoid elements shorter than on the uncut fiber.
+    """
+    from shapely.geometry import LineString, Point
+
+    if getattr(polygon, "geom_type", None) not in ("Polygon", "MultiPolygon"):
+        raise TypeError("polygon must be a shapely Polygon or MultiPolygon.")
+    if polygon.is_empty or float(polygon.area) <= 0.0:
+        raise ValueError("The clip polygon must have a positive area.")
+    if len(mat) == 0:
+        return mat
+
+    centers = mat[["x", "y", "z"]].to_numpy(dtype=float)
+    direction = np.array(mat[["u", "v", "w"]].to_numpy(dtype=float), copy=True)
+    direction /= np.linalg.norm(direction, axis=1, keepdims=True)
+    length = mat["l"].to_numpy(dtype=float)
+    stored = mat.attrs.get("source_length")
+    source = length if stored is None else np.asarray(stored, dtype=float)
+    tow = mat.attrs.get("tow")
+    rows = []
+    source_out = []
+    tow_out = []
+    for i in range(len(mat)):
+        pieces = _pieces_inside(centers[i], direction[i], float(length[i]), polygon,
+                                LineString, Point)
+        for mid, piece_length in pieces:
+            rows.append((
+                piece_length, float(mat["b"].iloc[i]), float(mat["h"].iloc[i]),
+                mid[0], mid[1], mid[2],
+                direction[i, 0], direction[i, 1], direction[i, 2],
+                float(mat["G"].iloc[i]), float(mat["E"].iloc[i]),
+            ))
+            source_out.append(float(source[i]))
+            if tow is not None:
+                tow_out.append(int(np.asarray(tow)[i]))
+    if not rows:
+        frame = pd.DataFrame(columns=list("lbhxyzuvwGE"))
+        frame.attrs["n"] = 0
+        frame.attrs["size"] = float(mat.attrs.get("size", 1.0))
+        frame.attrs["source_length"] = np.zeros(0)
+        return Mat(frame)
+
+    data = np.asarray(rows, dtype=float)
+    frame = pd.DataFrame(data, columns=list("lbhxyzuvwGE"))
+    frame.attrs["n"] = len(frame)
+    span = float(np.max(np.abs(data[:, 3:5])))
+    frame.attrs["size"] = max(float(mat.attrs.get("size", 0.0)), 2.0 * span + 1.0)
+    if "box" in mat.attrs:
+        frame.attrs["box"] = mat.attrs["box"]
+        height = float(mat.attrs["box"][2])
+        domain = float(polygon.area) * height
+        if frame.attrs.get("section", mat.attrs.get("section")) == "rectangle":
+            volume = float(np.sum(frame.l * frame.b * frame.h))
+        else:
+            volume = float(np.sum(0.25 * np.pi * frame.l * frame.b * frame.h))
+        frame.attrs["volume_fraction"] = volume / domain if domain > 0.0 else 0.0
+    frame.attrs["periodic"] = bool(mat.attrs.get("periodic", False))
+    if "section" in mat.attrs:
+        frame.attrs["section"] = mat.attrs["section"]
+    frame.attrs["source_length"] = np.asarray(source_out, dtype=float)
+    if tow is not None:
+        frame.attrs["tow"] = np.asarray(tow_out, dtype=int)
+    return Mat(frame)
+
+
+def _pieces_inside(center, direction, length, polygon, line_type, point_type):
+    """Center and length of each centerline piece that lies inside ``polygon``."""
+    half = 0.5 * length
+    horizontal = float(np.hypot(direction[0], direction[1]))
+    if horizontal < 1e-12:
+        if polygon.covers(point_type(center[0], center[1])):
+            return [(center.copy(), length)]
+        return []
+    start = center - half * direction
+    end = center + half * direction
+    cut = polygon.intersection(line_type([(start[0], start[1]), (end[0], end[1])]))
+    pieces = []
+    for segment in _lines(cut):
+        coords = np.asarray(segment.coords, dtype=float)
+        offset = coords - center[:2]
+        parameter = (offset[:, 0] * direction[0] + offset[:, 1] * direction[1]) / horizontal ** 2
+        parameter = np.clip(parameter, -half, half)
+        low = float(np.min(parameter))
+        high = float(np.max(parameter))
+        if high - low <= 1e-8:
+            continue
+        mid = center + 0.5 * (low + high) * direction
+        pieces.append((mid, high - low))
+    return pieces
+
+
+def _lines(geometry):
+    if geometry.is_empty:
+        return []
+    kind = geometry.geom_type
+    if kind == "LineString":
+        return [geometry]
+    if kind in ("MultiLineString", "GeometryCollection"):
+        found = []
+        for part in geometry.geoms:
+            found.extend(_lines(part))
+        return found
+    return []
+
+
 def roll_ring(points, box, scale=1.0):
     """Bend flat-stack coordinates into a ring about the y-axis.
 
@@ -451,6 +562,13 @@ def line_mesh(mat, n=10, roll=False, scale=1.0):
 
     With ``roll=True`` those nodes are then bent into a ring about the
     y-axis. The elements stay straight chords of that curve.
+
+    A fiber shortened by :func:`clip_polygon` does not keep ``n`` elements.
+    The uncut fiber would have been split into elements of length ``l / n``.
+    The cut piece is split into ``floor`` of how many of those fit, and those
+    elements are stretched equally so they cover the piece. A cut to 0.45 of
+    the length with ``n=10`` therefore becomes 4 elements, each longer than
+    ``l / 10``. A piece shorter than one uncut element is left out of the mesh.
 
     Parameters
     ----------
@@ -489,31 +607,73 @@ def line_mesh(mat, n=10, roll=False, scale=1.0):
     direction = np.array(mat[["u", "v", "w"]].to_numpy(dtype=float), copy=True)
     direction /= np.linalg.norm(direction, axis=1, keepdims=True)
     length = mat["l"].to_numpy(dtype=float)
-    stations = np.linspace(-0.5, 0.5, n + 1)
-    points = (
-        centers[:, None, :]
-        + stations[None, :, None] * length[:, None, None] * direction[:, None, :]
-    ).reshape(-1, 3)
+    stored = mat.attrs.get("source_length")
+    source = length if stored is None else np.asarray(stored, dtype=float)
+    counts = np.floor(n * length / np.maximum(source, 1e-15) + 1e-8).astype(np.int64)
+    angle = np.degrees(np.mod(np.arctan2(direction[:, 1], direction[:, 0]), np.pi))
+    diameter = mat["h"].to_numpy(dtype=float)
+    tow = mat.attrs.get("tow")
+    if np.all(counts == n):
+        stations = np.linspace(-0.5, 0.5, n + 1)
+        points = (
+            centers[:, None, :]
+            + stations[None, :, None] * length[:, None, None] * direction[:, None, :]
+        ).reshape(-1, 3)
+        nodes = n + 1
+        base = np.arange(count, dtype=np.int64)[:, None] * nodes
+        local = np.arange(n, dtype=np.int64)
+        cells = np.stack((base + local, base + local + 1), axis=-1).reshape(-1, 2)
+        fiber = np.repeat(np.arange(count, dtype=np.int64), n)
+        cell_data = {
+            "fiber": [fiber],
+            "diameter": [np.repeat(diameter, n)],
+            "angle": [np.repeat(angle, n)],
+        }
+        if tow is not None:
+            cell_data["tow"] = [np.repeat(np.asarray(tow, dtype=np.int64), n)]
+    else:
+        point_blocks = []
+        cell_blocks = []
+        fiber_ids = []
+        diameters = []
+        angles = []
+        tow_ids = []
+        offset = 0
+        tow_values = None if tow is None else np.asarray(tow)
+        for i in range(count):
+            pieces = int(counts[i])
+            if pieces < 1:
+                continue
+            stations = np.linspace(-0.5, 0.5, pieces + 1)
+            point_blocks.append(
+                centers[i] + (stations * length[i])[:, None] * direction[i]
+            )
+            local = np.arange(pieces, dtype=np.int64)
+            cell_blocks.append(np.column_stack((offset + local, offset + local + 1)))
+            fiber_ids.append(np.full(pieces, i, dtype=np.int64))
+            diameters.append(np.full(pieces, diameter[i]))
+            angles.append(np.full(pieces, angle[i]))
+            if tow_values is not None:
+                tow_ids.append(np.full(pieces, int(tow_values[i]), dtype=np.int64))
+            offset += pieces + 1
+        if not point_blocks:
+            return meshio.Mesh(
+                np.zeros((0, 3)),
+                [("line", np.zeros((0, 2), dtype=np.int64))],
+            )
+        points = np.vstack(point_blocks)
+        cells = np.vstack(cell_blocks)
+        cell_data = {
+            "fiber": [np.concatenate(fiber_ids)],
+            "diameter": [np.concatenate(diameters)],
+            "angle": [np.concatenate(angles)],
+        }
+        if tow_values is not None:
+            cell_data["tow"] = [np.concatenate(tow_ids)]
     if roll:
         if "box" not in mat.attrs:
             raise ValueError("Rolling into a ring needs mat.attrs['box'].")
         points = roll_ring(points, mat.attrs["box"], scale=scale)
-
-    nodes = n + 1
-    base = np.arange(count, dtype=np.int64)[:, None] * nodes
-    local = np.arange(n, dtype=np.int64)
-    cells = np.stack((base + local, base + local + 1), axis=-1).reshape(-1, 2)
-    fiber = np.repeat(np.arange(count, dtype=np.int64), n)
-    cell_data = {
-        "fiber": [fiber],
-        "diameter": [np.repeat(mat["h"].to_numpy(dtype=float), n)],
-        "angle": [np.repeat(np.degrees(np.mod(
-            np.arctan2(direction[:, 1], direction[:, 0]), np.pi,
-        )), n)],
-    }
-    tow = mat.attrs.get("tow")
-    if tow is not None:
-        cell_data["tow"] = [np.repeat(np.asarray(tow, dtype=np.int64), n)]
     return meshio.Mesh(points, [("line", cells)], cell_data=cell_data)
 
 

@@ -277,3 +277,29 @@ write_lines(subdivide(ring), "outputs/ring.vtk", n=10, roll=True)
 The ring below is that stack. Color is still the in-plane angle of each tow before the roll, drawn with viridis.
 
 ![Full ring colored by tow angle](images/smc_ring.png)
+
+### Clip to a polygon
+
+`clip_polygon` cuts the stack with a shapely polygon in the xy plane. The cut is vertical. Fibers outside the polygon are removed, and fibers that cross the boundary are trimmed. `text_polygon` builds that polygon from a word, with the counters left open.
+
+```python
+from fibermat.pack import clip_polygon, pack, subdivide
+from fibermat.text import text_polygon
+
+letters = text_polygon("MARCEL", height=40.0)
+stack = pack(
+    box=(250.0, 54.0, 4.0),
+    length=8.0,
+    width=1.5,
+    thickness=0.25,
+    section="rectangle",
+    volume_fraction=0.4,
+    seed=1,
+)
+marcel = clip_polygon(subdivide(stack), letters)
+
+```
+
+The letters below are that clip. Fibers are colored by their in-plane angle with the viridis colormap, and the counters in A and R stay empty.
+
+![MARCEL clipped from a rectangular stack](images/marcel.png)

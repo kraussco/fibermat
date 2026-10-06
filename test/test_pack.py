@@ -5,8 +5,11 @@ import numpy as np
 import pandas as pd
 
 from fibermat import Mat
+from shapely.geometry import MultiPolygon, box
+
 from fibermat.pack import (
-    _clearance, line_mesh, max_penetration, pack, subdivide, write_lines,
+    _clearance, clip_polygon, line_mesh, max_penetration, pack, subdivide,
+    write_lines,
 )
 
 
@@ -149,3 +152,44 @@ def test_roll_bends_fibers_into_a_ring_about_y():
     assert np.allclose(axial[:, 1], np.linspace(-2.0, 2.0, 9))
     wider = line_mesh(Mat(frame), n=8, roll=True, scale=3)
     assert np.allclose(np.hypot(wider.points[:9, 0], wider.points[:9, 2]), 3 * radius)
+
+
+def test_clip_polygon_cuts_crossed_fibers_into_longer_equal_elements():
+    """A fiber cut to 0.45 of its length becomes 4 equal elements, not 10 short ones."""
+    frame = pd.DataFrame(
+        [
+            [10.0, 0.2, 0.2, 5.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, np.inf],
+            [10.0, 0.2, 0.2, 30.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, np.inf],
+            [2.0, 0.2, 0.2, 2.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, np.inf],
+        ],
+        columns=list("lbhxyzuvwGE"),
+    )
+    frame.attrs["n"] = 3
+    frame.attrs["size"] = 80.0
+    frame.attrs["box"] = (80.0, 20.0, 4.0)
+    cut = clip_polygon(Mat(frame), box(0.0, -1.0, 4.5, 1.0))
+    assert len(cut) == 2
+    assert abs(float(cut.l.iloc[0]) - 4.5) < 1e-6
+    assert abs(float(cut.z.iloc[0]) - 1.0) < 1e-8
+    assert abs(float(cut.attrs["source_length"][0]) - 10.0) < 1e-8
+    assert abs(float(cut.l.iloc[1]) - 2.0) < 1e-6
+    mesh = line_mesh(cut, n=10)
+    piece = mesh.points[:5]
+    assert len(mesh.cells[0].data) == 4 + 10
+    assert np.allclose(piece[:, 0], np.linspace(0.0, 4.5, 5))
+    assert np.allclose(np.diff(piece[:, 0]), 1.125)
+    assert np.diff(piece[:, 0])[0] > 1.0
+
+
+def test_clip_polygon_splits_a_fiber_that_leaves_and_reenters():
+    """Each visit to the polygon becomes its own piece."""
+    frame = pd.DataFrame(
+        [[12.0, 0.2, 0.2, 0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 1.0, np.inf]],
+        columns=list("lbhxyzuvwGE"),
+    )
+    frame.attrs["n"] = 1
+    frame.attrs["size"] = 40.0
+    polygon = MultiPolygon([box(-6.0, -1.0, -1.0, 1.0), box(1.0, -1.0, 6.0, 1.0)])
+    cut = clip_polygon(Mat(frame), polygon)
+    assert len(cut) == 2
+    assert np.allclose(sorted(cut.l.to_numpy()), [5.0, 5.0])

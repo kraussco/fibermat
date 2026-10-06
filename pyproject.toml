@@ -21,6 +21,7 @@
         "pyvista",
         "scipy",
         "scikit-learn",
+        "shapely",
         "tqdm",
     ]
     keywords = [
