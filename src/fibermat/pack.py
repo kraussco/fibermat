@@ -415,6 +415,81 @@ def subdivide(mat):
     return Mat(frame)
 
 
+def line_mesh(mat, n=10):
+    """Split each fiber into ``n`` colinear line elements sharing their nodes.
+
+    A fiber of length ``l`` becomes ``n`` segments of length ``l / n``. The
+    first and last nodes are the fiber ends. Consecutive elements share the
+    node between them, and fibers do not share nodes with each other.
+
+    Parameters
+    ----------
+    mat : Mat
+        Fibers to discretize. Each row is one straight fiber.
+    n : int, optional
+        Number of line elements along each fiber. Default is 10.
+
+    Returns
+    -------
+    meshio.Mesh
+        Line mesh. Cell data holds the fiber index, its diameter and its
+        in-plane angle in degrees. A tow index is included when the mat
+        carries one.
+
+    """
+    import meshio
+
+    n = int(n)
+    if n < 1:
+        raise ValueError("n must be at least 1.")
+    if len(mat) == 0:
+        return meshio.Mesh(
+            np.zeros((0, 3)),
+            [("line", np.zeros((0, 2), dtype=np.int64))],
+        )
+
+    count = len(mat)
+    centers = mat[["x", "y", "z"]].to_numpy(dtype=float)
+    direction = np.array(mat[["u", "v", "w"]].to_numpy(dtype=float), copy=True)
+    direction /= np.linalg.norm(direction, axis=1, keepdims=True)
+    length = mat["l"].to_numpy(dtype=float)
+    stations = np.linspace(-0.5, 0.5, n + 1)
+    points = (
+        centers[:, None, :]
+        + stations[None, :, None] * length[:, None, None] * direction[:, None, :]
+    ).reshape(-1, 3)
+
+    nodes = n + 1
+    base = np.arange(count, dtype=np.int64)[:, None] * nodes
+    local = np.arange(n, dtype=np.int64)
+    cells = np.stack((base + local, base + local + 1), axis=-1).reshape(-1, 2)
+    fiber = np.repeat(np.arange(count, dtype=np.int64), n)
+    cell_data = {
+        "fiber": [fiber],
+        "diameter": [np.repeat(mat["h"].to_numpy(dtype=float), n)],
+        "angle": [np.repeat(np.degrees(np.mod(
+            np.arctan2(direction[:, 1], direction[:, 0]), np.pi,
+        )), n)],
+    }
+    tow = mat.attrs.get("tow")
+    if tow is not None:
+        cell_data["tow"] = [np.repeat(np.asarray(tow, dtype=np.int64), n)]
+    return meshio.Mesh(points, [("line", cells)], cell_data=cell_data)
+
+
+def write_lines(mat, path, n=10):
+    """Write each fiber as ``n`` colinear line elements using meshio.
+
+    The file format follows the extension of ``path`` (for example ``.vtk``
+    or ``.xdmf``).
+    """
+    import meshio
+
+    mesh = line_mesh(mat, n=n)
+    meshio.write(path, mesh)
+    return mesh
+
+
 def _clearance(center, theta, origin, other_theta, length, width, thickness,
                section="ellipse"):
     """Vertical gap each neighbor needs, and the in-plane push off that neighbor."""

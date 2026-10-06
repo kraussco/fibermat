@@ -15,6 +15,7 @@
         "ipython",
         "ipywidgets",
         "matplotlib",
+        "meshio",
         "numpy",
         "pandas",
         "pyvista",

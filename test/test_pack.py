@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from fibermat import Mat
-from fibermat.pack import _clearance, max_penetration, pack, subdivide
+from fibermat.pack import _clearance, line_mesh, max_penetration, pack, subdivide, write_lines
 
 
 def test_pack_drops_fibers_like_a_random_mat():
@@ -89,3 +89,33 @@ def test_subdivide_lays_touching_fibers_across_the_tow():
     assert np.allclose(np.diff(np.sort(fibers.y.to_numpy())), 0.25)
     assert np.allclose(fibers.u, 1.0)
     assert Mat.check(fibers)
+
+
+def test_line_mesh_splits_each_fiber_into_connected_segments(tmp_path):
+    """Ten colinear line elements run from one fiber end to the other."""
+    frame = pd.DataFrame(
+        [
+            [10.0, 0.2, 0.2, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, np.inf],
+            [4.0, 0.2, 0.2, 0.0, 3.0, 1.0, 0.0, 1.0, 0.0, 1.0, np.inf],
+        ],
+        columns=list("lbhxyzuvwGE"),
+    )
+    frame.attrs["n"] = 2
+    frame.attrs["size"] = 20.0
+    mesh = line_mesh(Mat(frame))
+    assert mesh.cells[0].type == "line"
+    assert len(mesh.points) == 2 * 11
+    assert len(mesh.cells[0].data) == 20
+    first = mesh.points[:11]
+    assert np.allclose(first[:, 0], np.linspace(-5.0, 5.0, 11))
+    assert np.allclose(first[:, 1], 0.0)
+    assert np.allclose(first[:, 2], 1.0)
+    # Consecutive elements share a node. The two fibers do not.
+    pairs = mesh.cells[0].data
+    assert pairs[0, 1] == pairs[1, 0]
+    assert pairs[9, 1] == 10
+    assert pairs[10, 0] == 11
+    path = tmp_path / "fibers.vtk"
+    written = write_lines(Mat(frame), path, n=4)
+    assert path.stat().st_size > 0
+    assert len(written.cells[0].data) == 8

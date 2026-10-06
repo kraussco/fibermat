@@ -229,7 +229,7 @@ msh.save("outputs/msh.vtk")
 Drop rectangular tows into a box, then split each tow into a row of touching round fibers. The fiber diameter is the tow thickness.
 
 ```python
-from fibermat.pack import pack, subdivide
+from fibermat.pack import pack, subdivide, write_lines
 
 tows = pack(
     box=(100.0, 50.0, 4.0),  # box length, width and height (mm)
@@ -242,9 +242,12 @@ tows = pack(
 )
 fibers = subdivide(tows)
 
+# Each fiber becomes 10 colinear line elements, written through meshio.
+write_lines(fibers, "outputs/fibers.vtk", n=10)
+
 ```
 
-`box` is centered in the plane and stands on `z = 0`. The mat is periodic in the plane. `volume_fraction` is a cap: packing stops when another tow does not fit, and the fraction actually reached is stored in `tows.attrs["volume_fraction"]`. `subdivide` replaces each tow by `floor(width / thickness)` parallel fibers of diameter `thickness`.
+`box` is centered in the plane and stands on `z = 0`. The mat is periodic in the plane. `volume_fraction` is a cap: packing stops when another tow does not fit, and the fraction actually reached is stored in `tows.attrs["volume_fraction"]`. `subdivide` replaces each tow by `floor(width / thickness)` parallel fibers of diameter `thickness`. `write_lines` splits every fiber into `n` line elements (10 by default) that share their end nodes, and meshio chooses the file format from the path.
 
 The stack below uses those dimensions. Each tow is colored by its in-plane angle with the viridis colormap. A tow has no preferred direction, so 0° and 180° are the same orientation.
 
