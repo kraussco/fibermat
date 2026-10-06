@@ -415,12 +415,42 @@ def subdivide(mat):
     return Mat(frame)
 
 
-def line_mesh(mat, n=10):
+def roll_ring(points, box, scale=1.0):
+    """Bend flat-stack coordinates into a ring about the y-axis.
+
+    ``box`` is ``(length, width, height)``: x along the length, y along the
+    width, and z up from the bottom. The mid-surface becomes a cylinder of
+    radius ``scale`` times the closed-ring radius (the box length over
+    2π). y stays the cylinder axis. A fiber off the mid-surface moves onto
+    its own radius, so the line follows the roll instead of staying straight.
+    With ``scale`` above 1 the sheet covers less than a full turn.
+    """
+    points = np.asarray(points, dtype=float)
+    scale = float(scale)
+    if scale <= 0:
+        raise ValueError("scale must be positive.")
+    lx, _ly, lz = (float(v) for v in box)
+    radius = scale * lx / (2.0 * np.pi)
+    if radius <= 0.5 * lz:
+        raise ValueError("The stack is too thick to roll into a ring about the y-axis.")
+    theta = points[:, 0] / radius
+    radial = radius + (points[:, 2] - 0.5 * lz)
+    return np.column_stack((
+        radial * np.sin(theta),
+        points[:, 1],
+        radial * np.cos(theta),
+    ))
+
+
+def line_mesh(mat, n=10, roll=False, scale=1.0):
     """Split each fiber into ``n`` colinear line elements sharing their nodes.
 
     A fiber of length ``l`` becomes ``n`` segments of length ``l / n``. The
     first and last nodes are the fiber ends. Consecutive elements share the
     node between them, and fibers do not share nodes with each other.
+
+    With ``roll=True`` those nodes are then bent into a ring about the
+    y-axis. The elements stay straight chords of that curve.
 
     Parameters
     ----------
@@ -428,6 +458,12 @@ def line_mesh(mat, n=10):
         Fibers to discretize. Each row is one straight fiber.
     n : int, optional
         Number of line elements along each fiber. Default is 10.
+    roll : bool, optional
+        Bend the stack into a ring about the y-axis. Needs
+        ``mat.attrs["box"]``. Default is False.
+    scale : float, optional
+        Mid-surface radius as a multiple of the closed-ring radius.
+        Default is 1, a full turn. 3 is three times that radius.
 
     Returns
     -------
@@ -458,6 +494,10 @@ def line_mesh(mat, n=10):
         centers[:, None, :]
         + stations[None, :, None] * length[:, None, None] * direction[:, None, :]
     ).reshape(-1, 3)
+    if roll:
+        if "box" not in mat.attrs:
+            raise ValueError("Rolling into a ring needs mat.attrs['box'].")
+        points = roll_ring(points, mat.attrs["box"], scale=scale)
 
     nodes = n + 1
     base = np.arange(count, dtype=np.int64)[:, None] * nodes
@@ -477,15 +517,16 @@ def line_mesh(mat, n=10):
     return meshio.Mesh(points, [("line", cells)], cell_data=cell_data)
 
 
-def write_lines(mat, path, n=10):
+def write_lines(mat, path, n=10, roll=False, scale=1.0):
     """Write each fiber as ``n`` colinear line elements using meshio.
 
     The file format follows the extension of ``path`` (for example ``.vtk``
-    or ``.xdmf``).
+    or ``.xdmf``). ``roll=True`` bends the stack into a ring about the y-axis
+    before writing. ``scale`` multiplies that ring's mid-surface radius.
     """
     import meshio
 
-    mesh = line_mesh(mat, n=n)
+    mesh = line_mesh(mat, n=n, roll=roll, scale=scale)
     meshio.write(path, mesh)
     return mesh
 

@@ -245,10 +245,35 @@ fibers = subdivide(tows)
 # Each fiber becomes 10 colinear line elements, written through meshio.
 write_lines(fibers, "outputs/fibers.vtk", n=10)
 
+# Bend that stack into a ring about the y-axis. The fibers follow the curve.
+write_lines(fibers, "outputs/fibers_ring.vtk", n=10, roll=True, scale=3)
+
 ```
 
-`box` is centered in the plane and stands on `z = 0`. The mat is periodic in the plane. `volume_fraction` is a cap: packing stops when another tow does not fit, and the fraction actually reached is stored in `tows.attrs["volume_fraction"]`. `subdivide` replaces each tow by `floor(width / thickness)` parallel fibers of diameter `thickness`. `write_lines` splits every fiber into `n` line elements (10 by default) that share their end nodes, and meshio chooses the file format from the path.
+`box` is centered in the plane and stands on `z = 0`. The mat is periodic in the plane. `volume_fraction` is a cap: packing stops when another tow does not fit, and the fraction actually reached is stored in `tows.attrs["volume_fraction"]`. `subdivide` replaces each tow by `floor(width / thickness)` parallel fibers of diameter `thickness`. `write_lines` splits every fiber into `n` line elements (10 by default) that share their end nodes, and meshio chooses the file format from the path. `roll=True` bends that stack into a ring, as shown below.
 
 The stack below uses those dimensions. Each tow is colored by its in-plane angle with the viridis colormap. A tow has no preferred direction, so 0° and 180° are the same orientation.
 
 ![SMC stack colored by tow angle](images/smc_stack.png)
+
+### Roll into a ring
+
+`roll=True` bends the finished stack into a ring about the y-axis. The box length becomes the circumference of the mid-surface, so the radius is that length over 2π, and each fiber follows the curve. `scale` multiplies the radius. A scale of 3 on a short box covers only a third of a turn; lengthen the box by the same factor and leave `scale` at 1 to close the larger ring.
+
+```python
+ring = pack(
+    box=(270.0, 35.0, 9.5),  # length equals the mid-surface circumference
+    length=25.0,
+    width=4.0,
+    thickness=0.206,
+    section="rectangle",
+    volume_fraction=0.4,
+    seed=2,
+)
+write_lines(subdivide(ring), "outputs/ring.vtk", n=10, roll=True)
+
+```
+
+The ring below is that stack. Color is still the in-plane angle of each tow before the roll, drawn with viridis.
+
+![Full ring colored by tow angle](images/smc_ring.png)

@@ -5,7 +5,9 @@ import numpy as np
 import pandas as pd
 
 from fibermat import Mat
-from fibermat.pack import _clearance, line_mesh, max_penetration, pack, subdivide, write_lines
+from fibermat.pack import (
+    _clearance, line_mesh, max_penetration, pack, subdivide, write_lines,
+)
 
 
 def test_pack_drops_fibers_like_a_random_mat():
@@ -119,3 +121,31 @@ def test_line_mesh_splits_each_fiber_into_connected_segments(tmp_path):
     written = write_lines(Mat(frame), path, n=4)
     assert path.stat().st_size > 0
     assert len(written.cells[0].data) == 8
+
+
+def test_roll_bends_fibers_into_a_ring_about_y():
+    """A fiber along the box length becomes an arc about the y-axis."""
+    lx, lz = 20.0, 2.0
+    radius = lx / (2.0 * np.pi)
+    frame = pd.DataFrame(
+        [
+            [4.0, 0.2, 0.2, 0.0, 1.0, 0.5 * lz, 1.0, 0.0, 0.0, 1.0, np.inf],
+            [4.0, 0.2, 0.2, 0.0, 0.0, 0.5 * lz, 0.0, 1.0, 0.0, 1.0, np.inf],
+        ],
+        columns=list("lbhxyzuvwGE"),
+    )
+    frame.attrs["n"] = 2
+    frame.attrs["size"] = 40.0
+    frame.attrs["box"] = (lx, 10.0, lz)
+    mesh = line_mesh(Mat(frame), n=8, roll=True)
+    arc, axial = mesh.points[:9], mesh.points[9:]
+    assert np.allclose(np.hypot(arc[:, 0], arc[:, 2]), radius)
+    assert np.allclose(arc[:, 1], 1.0)
+    chord = arc[-1] - arc[0]
+    rise = arc[len(arc) // 2] - arc[0]
+    assert np.linalg.norm(np.cross(chord, rise)) > 0.05
+    assert np.allclose(axial[:, 0], 0.0)
+    assert np.allclose(axial[:, 2], radius)
+    assert np.allclose(axial[:, 1], np.linspace(-2.0, 2.0, 9))
+    wider = line_mesh(Mat(frame), n=8, roll=True, scale=3)
+    assert np.allclose(np.hypot(wider.points[:9, 0], wider.points[:9, 2]), 3 * radius)
