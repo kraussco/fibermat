@@ -250,7 +250,7 @@ write_lines(fibers, "outputs/fibers_ring.vtk", n=10, roll=True, scale=3)
 
 ```
 
-`box` is centered in the plane and stands on `z = 0`. The mat is periodic in the plane. `volume_fraction` is a cap: packing stops when another tow does not fit, and the fraction actually reached is stored in `tows.attrs["volume_fraction"]`. `subdivide` replaces each tow by `floor(width / thickness)` parallel fibers of diameter `thickness`. `write_lines` splits every fiber into `n` line elements (10 by default) that share their end nodes, and meshio chooses the file format from the path. `roll=True` bends that stack into a ring, as shown below.
+`box` is centered in the plane and stands on `z = 0`. The mat is periodic in the plane. `volume_fraction` is a cap: packing stops when another tow does not fit, and the fraction actually reached is stored in `tows.attrs["volume_fraction"]`. `subdivide` replaces each tow by `floor(width / thickness)` parallel fibers of diameter `thickness`. `write_lines` splits every fiber into `n` line elements (10 by default) that share their end nodes, and meshio chooses the file format from the path. `roll=True` bends that stack into a ring. The closed ring is in the next section.
 
 The stack below uses those dimensions. Each tow is colored by its in-plane angle with the viridis colormap. A tow has no preferred direction, so 0° and 180° are the same orientation.
 
