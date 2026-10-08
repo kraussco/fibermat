@@ -50,6 +50,34 @@ def test_tow_bends_down_between_crossings():
     assert upper[len(upper) // 2, 2] > upper[0, 2] + 0.05
 
 
+def test_layered_filaments_meet_round_fiber_volume():
+    """Volume fraction is the round fibers inside each tow, not the rectangle."""
+    mat = pack(
+        box=(24.0, 24.0, 0.4), length=6.0, width=2.0, thickness=0.2,
+        volume_fraction=0.4, section="rectangle", layered=True,
+        filaments=True, sweeps=8, seed=1,
+    )
+    fibers = subdivide(mat)
+    assert fibers.attrs["volume_fraction"] >= 0.28
+    assert max_penetration(mat) <= 1e-4
+
+
+def test_layered_pack_reaches_planar_random_coverage():
+    """Sheets of no in-plane overlap are stacked until the target fraction."""
+    mat = pack(
+        box=(36.0, 36.0, 0.8), length=8.0, width=2.0, thickness=0.2,
+        volume_fraction=0.4, section="rectangle", layered=True, sweeps=8, seed=1,
+    )
+    assert mat.attrs["layered"] is True
+    assert mat.attrs["volume_fraction"] >= 0.38
+    along = float(np.mean(mat.u.to_numpy() ** 2))
+    assert 0.35 < along < 0.70
+    levels = np.unique(np.round(mat.z.to_numpy() / 0.2 - 0.5))
+    assert len(levels) == 4
+    assert max_penetration(mat) <= 1e-4
+    assert Mat.check(mat)
+
+
 def test_pack_flat_tows_stack_on_their_thickness():
     """A wide thin tow only needs its thickness of clearance at a crossing."""
     mat = pack(

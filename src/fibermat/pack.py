@@ -10,7 +10,7 @@ from fibermat.net import _lowest_free, _nested_gap, _rectangle_mtv, _segment_clo
 
 def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
          width=None, thickness=None, volume_fraction=0.6, sweeps=5, seed=0,
-         bend=False, section="ellipse"):
+         bend=False, section="ellipse", layered=False, filaments=False):
     """Drop straight fibers at random angles into a mat, as in SMC.
 
     The box is ``(length, width, height)`` in millimetres, centered in the
@@ -59,6 +59,14 @@ def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
         Cross-section used for the vertical clearance. ``ellipse`` thins
         toward the edge. ``rectangle`` keeps the full thickness across the
         whole width. Default is ``ellipse``.
+    layered : bool, optional
+        Pack one sheet of thickness ``thickness`` at a time, with no
+        in-plane overlap inside a sheet. A planar-random state of 40%
+        is a stack of those sheets. Default is False.
+    filaments : bool, optional
+        Count ``volume_fraction`` as the round fibers after
+        :func:`subdivide` (diameter equal to the tow thickness), not as
+        the rectangular tow solid. Default is False.
 
     Returns
     -------
@@ -77,10 +85,16 @@ def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
 
     if section not in ("ellipse", "rectangle"):
         raise ValueError("section must be 'ellipse' or 'rectangle'.")
-    if section == "rectangle":
+    n_fil = max(1, int(np.floor(width / thickness + 1e-8)))
+    if filaments:
+        fiber_volume = n_fil * 0.25 * np.pi * length * thickness * thickness
+        chip_area = n_fil * 0.25 * np.pi * length * thickness
+    elif section == "rectangle":
         fiber_volume = length * width * thickness
+        chip_area = length * width
     else:
         fiber_volume = 0.25 * np.pi * length * width * thickness
+        chip_area = 0.25 * np.pi * length * width
     n_max = int(round(volume_fraction * lx * ly * lz / fiber_volume))
     half = 0.5 * thickness
     rng = np.random.default_rng(seed)
@@ -95,14 +109,49 @@ def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
     misses = 0
     # A taller box has more open pockets, so keep trying in proportion to it.
     miss_limit = max(200, n_max // 2)
-    while placed < n_max and misses < miss_limit:
+    n_layers = max(1, int(np.floor(lz / thickness + 1e-12)))
+    layer = 0
+    layer_grid = _Grid(max(width, thickness), lx, ly)
+    layer_misses = 0
+    layer_count = 0
+    if layered:
+        sheet_area = lx * ly
+        quota = volume_fraction * sheet_area / chip_area
+        n_per_layer = max(1, int(np.ceil(quota - 1e-12) if filaments else round(quota)))
+        n_max = n_per_layer * n_layers
+        xy = np.zeros((n_max, 2))
+        z = np.zeros(n_max)
+        theta = np.zeros(n_max)
+    else:
+        n_per_layer = n_max
+    layer_miss_limit = max(400, 20 * n_per_layer)
+    while placed < n_max and (layered or misses < miss_limit):
         ang = float(rng.uniform(0.0, np.pi))
         if _hits_own_image(ang, length, width, lx, ly):
             continue
         x = float(rng.uniform(-0.5 * lx, 0.5 * lx))
         y = float(rng.uniform(-0.5 * ly, 0.5 * ly))
         line = None
-        if bend:
+        if layered:
+            if layer >= n_layers:
+                break
+            pose = _fit_layer(
+                x, y, ang, xy[:placed], theta[:placed], layer_grid,
+                lx, ly, length, width, thickness, max(sweeps, 12),
+            )
+            if pose is None:
+                layer_misses += 1
+                if layer_misses >= layer_miss_limit:
+                    layer += 1
+                    layer_grid = _Grid(max(width, thickness), lx, ly)
+                    layer_misses = 0
+                    layer_count = 0
+                continue
+            x, y = pose
+            height = (layer + 0.5) * thickness
+            if height + half > lz + 1e-8:
+                break
+        elif bend:
             line = _drape_centerline(
                 x, y, ang, length, width, thickness, hmap,
             )
@@ -111,25 +160,36 @@ def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
                 continue
             _paint_tow(x, y, ang, length, width, thickness, line, hmap)
             pose = (x, y, float(line[:, 2].mean()))
+            x, y, height = pose
         else:
             pose = _fit(
                 x, y, ang, xy[:placed], z[:placed], theta[:placed],
                 grid, lx, ly, lz, length, width, thickness, half, sweeps,
                 section,
             )
-        if pose is None:
-            misses += 1
-            continue
-        x, y, height = pose
+            if pose is None:
+                misses += 1
+                continue
+            x, y, height = pose
         xy[placed] = (x, y)
         z[placed] = height
         theta[placed] = ang
-        if not bend:
+        if layered:
+            layer_grid.add(placed, x, y)
+            grid.add(placed, x, y)
+            layer_count += 1
+            if layer_count >= n_per_layer:
+                layer += 1
+                layer_grid = _Grid(max(width, thickness), lx, ly)
+                layer_count = 0
+                layer_misses = 0
+        elif not bend:
             grid.add(placed, x, y)
         else:
             centerlines.append(line)
         placed += 1
         misses = 0
+        layer_misses = 0
 
     xy, z, theta = xy[:placed], z[:placed], theta[:placed]
     if placed == 0:
@@ -156,6 +216,7 @@ def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
     frame.attrs["periodic"] = True
     frame.attrs["volume_fraction"] = placed * fiber_volume / (lx * ly * lz)
     frame.attrs["bent"] = bool(bend)
+    frame.attrs["layered"] = bool(layered)
     frame.attrs["section"] = section
     if bend:
         frame.attrs["centerlines"] = centerlines
@@ -747,6 +808,29 @@ def _fit(x, y, theta, xy, z, thetas, grid, lx, ly, lz, length, width, thickness,
         x += 0.85 * float(push[0])
         y += 0.85 * float(push[1])
         x, y = _wrap(x, y, lx, ly)
+    return None
+
+
+def _fit_layer(x, y, theta, xy, thetas, grid, lx, ly, length, width, thickness, sweeps):
+    """In-plane pose with no planform overlap, after a few slides."""
+    for _attempt in range(sweeps + 1):
+        x, y = _wrap(x, y, lx, ly)
+        idx, origin = _candidates(
+            x, y, theta, xy, thetas, grid, lx, ly, length, width, True,
+        )
+        if len(idx) == 0:
+            return _wrap(x, y, lx, ly)
+        gap, mtv = _clearance(
+            (x, y), theta, origin, thetas[idx], length, width, thickness, "rectangle",
+        )
+        if not np.any(gap > 1e-8):
+            return x, y
+        blame = int(np.argmax(gap))
+        push = mtv[blame]
+        if not np.isfinite(push[0]):
+            return None
+        x += 0.85 * float(push[0])
+        y += 0.85 * float(push[1])
     return None
 
 
