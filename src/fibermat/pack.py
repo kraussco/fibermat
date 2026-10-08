@@ -10,7 +10,7 @@ from fibermat.net import _lowest_free, _nested_gap, _rectangle_mtv, _segment_clo
 
 def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
          width=None, thickness=None, volume_fraction=0.6, sweeps=5, seed=0,
-         bend=False, section="ellipse"):
+         bend=False, section="ellipse", miss_limit=None):
     """Drop straight fibers at random angles into a mat, as in SMC.
 
     The box is ``(length, width, height)`` in millimetres, centered in the
@@ -50,6 +50,9 @@ def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
         Maximum fiber volume over box volume. Default is 0.6.
     sweeps : int, optional
         In-plane nudges tried when a fiber does not fit at first. Default is 5.
+    miss_limit : int, optional
+        Consecutive failed insertions before packing stops, even if the
+        volume-fraction cap is not reached. Default is ``max(200, n_max // 2)``.
     seed : int, optional
         Random seed. Default is 0.
     bend : bool, optional
@@ -94,7 +97,12 @@ def pack(box=(50.0, 10.0, 15.0), length=12.5, diameter=1.0,
     placed = 0
     misses = 0
     # A taller box has more open pockets, so keep trying in proportion to it.
-    miss_limit = max(200, n_max // 2)
+    if miss_limit is None:
+        miss_limit = max(200, n_max // 2)
+    else:
+        miss_limit = int(miss_limit)
+        if miss_limit < 1:
+            raise ValueError("miss_limit must be at least 1.")
     while placed < n_max and misses < miss_limit:
         ang = float(rng.uniform(0.0, np.pi))
         if _hits_own_image(ang, length, width, lx, ly):
